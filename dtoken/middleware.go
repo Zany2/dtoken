@@ -1,4 +1,4 @@
-package gtoken
+package dtoken
 
 import (
 	"github.com/gogf/gf/v2/errors/gcode"

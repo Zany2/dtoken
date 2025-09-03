@@ -1,4 +1,4 @@
-package gtoken
+package dtoken
 
 const (
 	CacheModeCache   = 1
