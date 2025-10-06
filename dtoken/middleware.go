@@ -85,7 +85,7 @@ func (m Middleware) HasExcludePath(r *ghttp.Request) bool {
 			tmpPath = gstr.SubStr(tmpPath, 0, len(tmpPath)-2)
 			if gstr.HasPrefix(urlPath, tmpPath) {
 				// 前缀匹配不拦截
-				return false
+				return true
 			}
 		} else {
 			// 全路径匹配
