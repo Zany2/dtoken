@@ -15,10 +15,13 @@ type Options struct {
 	EncryptKey       []byte     // Token加密key
 	MultiLogin       bool       // 是否支持多端登录，默认false
 	AuthExcludePaths g.SliceStr // 排除拦截地址
+
+	GoroutinePoolSize  int // 协程池任务个数
+	GoroutineTaskQueue int // 任务队列长度
 }
 
 func (o *Options) String() string {
 	return "gToken Options: " + fmt.Sprintf(
-		"缓存模式: %d 缓存key前缀: %s 超时时间: %d 缓存刷新时间: %d 最大刷新次数: %d Token分隔符: %s 是否支持多端登录: %t 排除拦截地址: %v",
-		o.CacheMode, o.CachePreKey, o.Timeout, o.MaxRefresh, o.MaxRefreshTimes, o.TokenDelimiter, o.MultiLogin, o.AuthExcludePaths)
+		"缓存模式: %d 缓存key前缀: %s 超时时间: %d 缓存刷新时间: %d 最大刷新次数: %d Token分隔符: %s 是否支持多端登录: %t 协程池任务个数: %d 任务队列长度: %d 排除拦截地址: %v ",
+		o.CacheMode, o.CachePreKey, o.Timeout, o.MaxRefresh, o.MaxRefreshTimes, o.TokenDelimiter, o.MultiLogin, o.GoroutinePoolSize, o.GoroutineTaskQueue, o.AuthExcludePaths)
 }

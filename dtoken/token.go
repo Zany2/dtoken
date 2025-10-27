@@ -8,6 +8,7 @@ import (
 	"github.com/gogf/gf/v2/os/gctx"
 	"github.com/gogf/gf/v2/os/gtime"
 	"github.com/gogf/gf/v2/util/gconv"
+	"github.com/panjf2000/ants/v2"
 )
 
 // Token 接口
@@ -22,15 +23,19 @@ type Token interface {
 	ParseToken(ctx context.Context, token string) (userKey string, data any, err error)
 	// Destroy 销毁 Token
 	Destroy(ctx context.Context, userKey string) error
+	// Renew 续期 Token
+	Renew(ctx context.Context, token string)
 	// GetOptions 获取配置参数
 	GetOptions() Options
 }
 
-// GTokenV2 gtoken结构体
+// GTokenV2 gToken结构体
 type GTokenV2 struct {
 	Options Options
 	Codec   Codec
 	Cache   Cache
+	// 协程池
+	Pool *ants.Pool
 }
 
 func NewDefaultTokenByConfig() Token {
@@ -62,11 +67,29 @@ func NewDefaultToken(options Options) Token {
 	if options.TokenDelimiter == "" {
 		options.TokenDelimiter = DefaultTokenDelimiter
 	}
+	if options.GoroutinePoolSize == 0 {
+		options.GoroutinePoolSize = DefaultGoroutinePoolSize
+	}
+	if options.GoroutineTaskQueue == 0 {
+		options.GoroutineTaskQueue = DefaultGoroutineTaskQueue
+	}
+
+	// 初始化协程池
+	pool, err := ants.NewPool(
+		options.GoroutinePoolSize,
+		ants.WithMaxBlockingTasks(options.GoroutineTaskQueue),
+		ants.WithPreAlloc(true),
+		ants.WithNonblocking(true),
+	)
+	if err != nil {
+		panic(err)
+	}
 
 	gfToken := &GTokenV2{
 		Options: options,
 		Codec:   NewDefaultCodec(options.TokenDelimiter, options.EncryptKey),
 		Cache:   NewDefaultCache(options.CacheMode, options.CachePreKey, options.Timeout),
+		Pool:    pool,
 	}
 
 	g.Log().Debug(
@@ -141,32 +164,16 @@ func (m *GTokenV2) Validate(ctx context.Context, token string) (data any, err er
 		return
 	}
 
-	data = userCache[KeyData]
+	// 同步检查是否需要续期
+	now := gtime.Now().TimestampMilli()
+	create := gconv.Int64(userCache[KeyCreateTime])
+	refreshNum := gconv.Int(userCache[KeyRefreshNum])
 
-	// 需要进行缓存超时时间刷新
-	refreshToken := func() {
-		nowTime := gtime.Now().TimestampMilli()
-		createTime := userCache[KeyCreateTime]
-		refreshNum := gconv.Int(userCache[KeyRefreshNum])
-		if m.Options.MaxRefresh == 0 {
-			return
-		}
-		if m.Options.MaxRefreshTimes > 0 && refreshNum >= m.Options.MaxRefreshTimes {
-			return
-		}
-		if nowTime > gconv.Int64(createTime)+m.Options.MaxRefresh {
-			userCache[KeyRefreshNum] = refreshNum + 1
-			userCache[KeyCreateTime] = gtime.Now().TimestampMilli()
-			err = m.Cache.Set(ctx, userKey, userCache)
-			if err != nil {
-				err = gerror.WrapCode(gcode.CodeInternalError, err)
-				return
-			}
-		}
+	if m.Options.MaxRefresh > 0 && now > create+m.Options.MaxRefresh && (m.Options.MaxRefreshTimes == 0 || refreshNum < m.Options.MaxRefreshTimes) {
+		m.Renew(ctx, token)
 	}
-	refreshToken()
 
-	return
+	return userCache[KeyData], nil
 }
 
 // Get 通过userKey获取Token
@@ -220,6 +227,64 @@ func (m *GTokenV2) Destroy(ctx context.Context, userKey string) error {
 		return gerror.WrapCode(gcode.CodeInternalError, err)
 	}
 	return nil
+}
+
+// Renew 异步续期 Token
+func (m *GTokenV2) Renew(ctx context.Context, token string) {
+	maxRetry := 2
+
+	task := func() {
+		userKey, err := m.Codec.Decrypt(ctx, token)
+		if err != nil {
+			g.Log().Error(ctx, "Token续期失败：解析失败", "token:", token, "err:", err)
+			return
+		}
+
+		userCache, err := m.Cache.Get(ctx, userKey)
+		if err != nil || userCache == nil {
+			return
+		}
+
+		nowTime := gtime.Now().TimestampMilli()
+		createTime := gconv.Int64(userCache[KeyCreateTime])
+		refreshNum := gconv.Int(userCache[KeyRefreshNum])
+		if m.Options.MaxRefresh == 0 || (m.Options.MaxRefreshTimes > 0 && refreshNum >= m.Options.MaxRefreshTimes) {
+			return
+		}
+
+		if nowTime > createTime+m.Options.MaxRefresh {
+			userCache[KeyRefreshNum] = refreshNum + 1
+			userCache[KeyCreateTime] = nowTime
+
+			if err := m.Cache.Set(ctx, userKey, userCache); err != nil {
+				g.Log().Error(ctx, "Token续期失败：缓存写入异常", "userKey:", userKey, "err:", err)
+			}
+		}
+	}
+
+	for i := 0; i <= maxRetry; i++ {
+		if err := m.Pool.Submit(task); err != nil {
+			if gerror.Is(err, ants.ErrPoolOverload) {
+				if i == maxRetry {
+					g.Log().Warning(
+						ctx,
+						"Token续期任务丢弃：协程池已满且重试失败",
+						"token:", token,
+					)
+					return
+				}
+				continue
+			}
+			g.Log().Error(
+				ctx,
+				"Token续期任务提交失败",
+				"token:", token,
+				"err:", err,
+			)
+			return
+		}
+		return
+	}
 }
 
 // GetOptions 获取Options配置
