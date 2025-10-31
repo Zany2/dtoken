@@ -3,6 +3,7 @@ module github.com/Zany2/dtoken
 go 1.23.0
 
 require (
+	github.com/click33/sa-token-go/core v0.1.2
 	github.com/gogf/gf/v2 v2.9.3
 	github.com/panjf2000/ants/v2 v2.11.3
 )

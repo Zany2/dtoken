@@ -11,33 +11,26 @@ import (
 	"github.com/panjf2000/ants/v2"
 )
 
-// Token 接口
+// Token defines token interface | Token 接口定义
 type Token interface {
-	// Generate 生成 Token
-	Generate(ctx context.Context, userKey string, data any) (token string, err error)
-	// Validate 验证 Token
-	Validate(ctx context.Context, token string) (data any, err error)
-	// Get 获取 Token
-	Get(ctx context.Context, userKey string) (token string, data any, err error)
-	// ParseToken 通过token获取userKey data
+	Generate(ctx context.Context, userKey string, data any) (token string, err error) // Generate token | 生成 Token
+	Validate(ctx context.Context, token string) (data any, err error)                 // Validate token | 验证 Token
+	Get(ctx context.Context, userKey string) (token string, data any, err error)      // Get token by userKey | 通过 userKey 获取 Token
 	ParseToken(ctx context.Context, token string) (userKey string, data any, err error)
-	// Destroy 销毁 Token
-	Destroy(ctx context.Context, userKey string) error
-	// Renew 续期 Token
-	Renew(ctx context.Context, token string)
-	// GetOptions 获取配置参数
-	GetOptions() Options
+	Destroy(ctx context.Context, userKey string) error // Destroy token | 销毁 Token
+	Renew(ctx context.Context, token string)           // Asynchronously renew token | 异步续期 Token
+	GetOptions() Options                               // Get config options | 获取配置参数
 }
 
-// GTokenV2 gToken结构体
+// GTokenV2 main implementation | gToken 主体结构体
 type GTokenV2 struct {
-	Options Options
-	Codec   Codec
-	Cache   Cache
-	// 协程池
-	Pool *ants.Pool
+	Options          Options
+	Codec            Codec
+	Cache            Cache
+	RenewPoolManager *RenewPoolManager
 }
 
+// NewDefaultTokenByConfig creates a token from global config | 从全局配置创建 Token
 func NewDefaultTokenByConfig() Token {
 	var options *Options
 	err := g.Cfg().MustGet(gctx.New(), "gToken").Struct(&options)
@@ -50,7 +43,9 @@ func NewDefaultTokenByConfig() Token {
 	return NewDefaultToken(*options)
 }
 
+// NewDefaultToken creates token instance with options | 使用配置创建 Token 实例
 func NewDefaultToken(options Options) Token {
+	// Apply defaults | 应用默认配置
 	if options.CacheMode == 0 {
 		options.CacheMode = CacheModeCache
 	}
@@ -67,120 +62,124 @@ func NewDefaultToken(options Options) Token {
 	if options.TokenDelimiter == "" {
 		options.TokenDelimiter = DefaultTokenDelimiter
 	}
-	if options.GoroutinePoolSize == 0 {
-		options.GoroutinePoolSize = DefaultGoroutinePoolSize
+	if options.PoolMinSize <= 0 {
+		options.PoolMinSize = DefaultMinSize
 	}
-	if options.GoroutineTaskQueue == 0 {
-		options.GoroutineTaskQueue = DefaultGoroutineTaskQueue
+	if options.PoolMaxSize <= 0 {
+		options.PoolMaxSize = DefaultMaxSize
+	}
+	if options.PoolScaleUpRate <= 0 {
+		options.PoolScaleUpRate = DefaultScaleUpRate
+	}
+	if options.PoolScaleDownRate <= 0 {
+		options.PoolScaleDownRate = DefaultScaleDownRate
+	}
+	if options.RenewInterval <= 0 {
+		options.RenewInterval = DefaultRenewInterval.Milliseconds() // 默认续期间隔（毫秒）
 	}
 
-	// 初始化协程池
-	pool, err := ants.NewPool(
-		options.GoroutinePoolSize,
-		ants.WithMaxBlockingTasks(options.GoroutineTaskQueue),
-		ants.WithPreAlloc(true),
-		ants.WithNonblocking(true),
-	)
+	// Initialize renew pool | 初始化续期协程池
+	renewPoolManager, err := NewRenewPoolBuilder().
+		MinSize(options.PoolMinSize).
+		MaxSize(options.PoolMaxSize).
+		ScaleUpRate(options.PoolScaleUpRate).
+		ScaleDownRate(options.PoolScaleDownRate).
+		Build()
 	if err != nil {
 		panic(err)
 	}
 
 	gfToken := &GTokenV2{
-		Options: options,
-		Codec:   NewDefaultCodec(options.TokenDelimiter, options.EncryptKey),
-		Cache:   NewDefaultCache(options.CacheMode, options.CachePreKey, options.Timeout),
-		Pool:    pool,
+		Options:          options,
+		Codec:            NewDefaultCodec(options.TokenDelimiter, options.EncryptKey),
+		Cache:            NewDefaultCache(options.CacheMode, options.CachePreKey, options.Timeout),
+		RenewPoolManager: renewPoolManager,
 	}
 
-	g.Log().Debug(
-		gctx.New(),
-		gfToken.Options.String(),
-	)
-
+	g.Log().Infof(gctx.New(), gfToken.Options.String())
 	return gfToken
 }
 
-// Generate 生成 Token
+// Generate creates a new token for user | 生成 Token
 func (m *GTokenV2) Generate(ctx context.Context, userKey string, data any) (token string, err error) {
 	if userKey == "" {
-		err = gerror.NewCode(gcode.CodeMissingParameter, MsgErrUserKeyEmpty)
-		return
+		return "", gerror.NewCode(gcode.CodeMissingParameter, MsgErrUserKeyEmpty)
 	}
 
+	// Support multi-login (reuse existing token) | 支持多端重复登录（重用旧 Token）
 	if m.Options.MultiLogin {
-		// 支持多端重复登录，如果获取到返回相同token
 		token, _, err = m.Get(ctx, userKey)
 		if err == nil && token != "" {
-			return
+			return token, nil
 		}
 	}
 
 	token, err = m.Codec.Encode(ctx, userKey)
 	if err != nil {
-		err = gerror.WrapCode(gcode.CodeInternalError, err)
-		return
+		return "", gerror.WrapCode(gcode.CodeInternalError, err)
 	}
 
 	userCache := g.Map{
-		KeyUserKey:    userKey,
-		KeyToken:      token,
-		KeyData:       data,
-		KeyRefreshNum: 0,
-		KeyCreateTime: gtime.Now().TimestampMilli(),
+		KeyUserKey:       userKey,
+		KeyToken:         token,
+		KeyData:          data,
+		KeyRefreshNum:    0,
+		KeyLastRenewTime: 0,
+		KeyCreateTime:    gtime.Now().TimestampMilli(),
 	}
 
-	err = m.Cache.Set(ctx, userKey, userCache)
-	if err != nil {
-		err = gerror.WrapCode(gcode.CodeInternalError, err)
-		return
+	if err = m.Cache.Set(ctx, userKey, userCache); err != nil {
+		return "", gerror.WrapCode(gcode.CodeInternalError, err)
 	}
-
-	return
+	return token, nil
 }
 
-// Validate 验证 Token
+// Validate checks token validity and optionally triggers renewal | 验证 Token 并触发续期
 func (m *GTokenV2) Validate(ctx context.Context, token string) (data any, err error) {
 	if token == "" {
-		err = gerror.NewCode(gcode.CodeMissingParameter, MsgErrTokenEmpty)
-		return
+		return nil, gerror.NewCode(gcode.CodeMissingParameter, MsgErrTokenEmpty)
 	}
 
 	userKey, err := m.Codec.Decrypt(ctx, token)
 	if err != nil {
-		err = gerror.WrapCode(gcode.CodeInvalidParameter, err)
-		return
+		return nil, gerror.WrapCode(gcode.CodeInvalidParameter, err)
 	}
 
 	userCache, err := m.Cache.Get(ctx, userKey)
 	if err != nil {
-		return
+		return nil, err
 	}
 	if userCache == nil {
-		err = gerror.NewCode(gcode.CodeInternalError, MsgErrDataEmpty)
-		return
+		return nil, gerror.NewCode(gcode.CodeInternalError, MsgErrDataEmpty)
 	}
 	if token != userCache[KeyToken] {
-		err = gerror.NewCode(gcode.CodeInvalidParameter, MsgErrValidate)
-		return
+		return nil, gerror.NewCode(gcode.CodeInvalidParameter, MsgErrValidate)
 	}
 
-	// 同步检查是否需要续期
+	// Renewal check | 检查是否需要续期
 	now := gtime.Now().TimestampMilli()
 	create := gconv.Int64(userCache[KeyCreateTime])
 	refreshNum := gconv.Int(userCache[KeyRefreshNum])
+	lastRenew := gconv.Int64(userCache[KeyLastRenewTime])
 
-	if m.Options.MaxRefresh > 0 && now > create+m.Options.MaxRefresh && (m.Options.MaxRefreshTimes == 0 || refreshNum < m.Options.MaxRefreshTimes) {
+	// Prevent renewal spam | 防止重复续期
+	if lastRenew > 0 && now-lastRenew < m.Options.RenewInterval {
+		return userCache[KeyData], nil
+	}
+
+	if m.Options.MaxRefresh > 0 &&
+		now > create+m.Options.MaxRefresh &&
+		(m.Options.MaxRefreshTimes == 0 || refreshNum < m.Options.MaxRefreshTimes) {
 		m.Renew(ctx, token)
 	}
 
 	return userCache[KeyData], nil
 }
 
-// Get 通过userKey获取Token
+// Get retrieves token and data by userKey | 通过 userKey 获取 Token
 func (m *GTokenV2) Get(ctx context.Context, userKey string) (token string, data any, err error) {
 	if userKey == "" {
-		err = gerror.NewCode(gcode.CodeMissingParameter, MsgErrUserKeyEmpty)
-		return
+		return "", nil, gerror.NewCode(gcode.CodeMissingParameter, MsgErrUserKeyEmpty)
 	}
 
 	userCache, err := m.Cache.Get(ctx, userKey)
@@ -193,17 +192,15 @@ func (m *GTokenV2) Get(ctx context.Context, userKey string) (token string, data 
 	return gconv.String(userCache[KeyToken]), userCache[KeyData], nil
 }
 
-// ParseToken 通过token获取userKey data
+// ParseToken parses token to retrieve userKey and data | 解析 Token 获取 userKey 和数据
 func (m *GTokenV2) ParseToken(ctx context.Context, token string) (userKey string, data any, err error) {
 	if token == "" {
-		err = gerror.NewCode(gcode.CodeMissingParameter, MsgErrUserKeyEmpty)
-		return
+		return "", nil, gerror.NewCode(gcode.CodeMissingParameter, MsgErrUserKeyEmpty)
 	}
 
 	userKey, err = m.Codec.Decrypt(ctx, token)
 	if err != nil {
-		err = gerror.WrapCode(gcode.CodeInvalidParameter, err)
-		return
+		return "", nil, gerror.WrapCode(gcode.CodeInvalidParameter, err)
 	}
 
 	userCache, err := m.Cache.Get(ctx, userKey)
@@ -216,78 +213,85 @@ func (m *GTokenV2) ParseToken(ctx context.Context, token string) (userKey string
 	return userKey, userCache[KeyData], nil
 }
 
-// Destroy 通过userKey销毁Token
+// Destroy removes user token from cache | 销毁 Token
 func (m *GTokenV2) Destroy(ctx context.Context, userKey string) error {
 	if userKey == "" {
 		return gerror.NewCode(gcode.CodeMissingParameter, MsgErrUserKeyEmpty)
 	}
-
-	err := m.Cache.Remove(ctx, userKey)
-	if err != nil {
+	if err := m.Cache.Remove(ctx, userKey); err != nil {
 		return gerror.WrapCode(gcode.CodeInternalError, err)
 	}
 	return nil
 }
 
-// Renew 异步续期 Token
+// Renew asynchronously renews a token | 异步续期 Token
 func (m *GTokenV2) Renew(ctx context.Context, token string) {
-	maxRetry := 2
+	if err := m.RenewPoolManager.Submit(func() {
 
-	task := func() {
+		// 1. Decode token to extract userKey | 解析 Token 获取用户标识
 		userKey, err := m.Codec.Decrypt(ctx, token)
 		if err != nil {
-			g.Log().Error(ctx, "Token续期失败：解析失败", "token:", token, "err:", err)
+			g.Log().Errorf(ctx, "gToken: Token renewal decode failed token:%s err:%s", token, err.Error())
 			return
 		}
 
+		// 2. Retrieve user cache from storage | 获取用户缓存数据
 		userCache, err := m.Cache.Get(ctx, userKey)
 		if err != nil || userCache == nil {
 			return
 		}
 
+		// 3. Read current time and renewal-related metadata | 读取当前时间与续期相关信息
 		nowTime := gtime.Now().TimestampMilli()
-		createTime := gconv.Int64(userCache[KeyCreateTime])
-		refreshNum := gconv.Int(userCache[KeyRefreshNum])
-		if m.Options.MaxRefresh == 0 || (m.Options.MaxRefreshTimes > 0 && refreshNum >= m.Options.MaxRefreshTimes) {
+		createTime := gconv.Int64(userCache[KeyCreateTime])       // Token creation time | 创建时间
+		refreshNum := gconv.Int(userCache[KeyRefreshNum])         // Number of times token has been refreshed | 已续期次数
+		lastRenewTime := gconv.Int64(userCache[KeyLastRenewTime]) // Last token renewal time | 上次续期时间
+
+		// 4. Limit renewal frequency by configuration | 按配置限制续期间隔
+		if lastRenewTime > 0 && nowTime-lastRenewTime < m.Options.RenewInterval {
+			g.Log().Debugf(ctx, "gToken: User %s renewal too frequent (interval < %dms)", userKey, m.Options.RenewInterval)
 			return
 		}
 
+		// 5. Check renewal policy | 检查续期策略
+		if m.Options.MaxRefresh == 0 ||
+			(m.Options.MaxRefreshTimes > 0 && refreshNum >= m.Options.MaxRefreshTimes) {
+			return
+		}
+
+		// 6. Check if token is due for renewal | 检查是否到达续期时间
 		if nowTime > createTime+m.Options.MaxRefresh {
-			userCache[KeyRefreshNum] = refreshNum + 1
-			userCache[KeyCreateTime] = nowTime
 
-			if err := m.Cache.Set(ctx, userKey, userCache); err != nil {
-				g.Log().Error(ctx, "Token续期失败：缓存写入异常", "userKey:", userKey, "err:", err)
+			// Update renewal info | 更新续期信息
+			userCache[KeyRefreshNum] = refreshNum + 1
+			userCache[KeyLastRenewTime] = nowTime
+
+			// Write back to cache | 写回缓存
+			if err = m.Cache.Set(ctx, userKey, userCache); err != nil {
+				g.Log().Errorf(ctx, "gToken: Token renewal cache write failed userKey:%s err:%s", userKey, err.Error())
 			}
 		}
-	}
 
-	for i := 0; i <= maxRetry; i++ {
-		if err := m.Pool.Submit(task); err != nil {
-			if gerror.Is(err, ants.ErrPoolOverload) {
-				if i == maxRetry {
-					g.Log().Warning(
-						ctx,
-						"Token续期任务丢弃：协程池已满且重试失败",
-						"token:", token,
-					)
-					return
-				}
-				continue
-			}
-			g.Log().Error(
-				ctx,
-				"Token续期任务提交失败",
-				"token:", token,
-				"err:", err,
-			)
+	}); err != nil {
+
+		// 7. Handle pool overload or submission errors | 协程池已满或任务提交失败
+		if gerror.Is(err, ants.ErrPoolOverload) {
+			g.Log().Warningf(ctx, "gToken: Token renewal task dropped (pool full) token:%s", token)
 			return
 		}
-		return
+
+		g.Log().Errorf(ctx, "gToken: Token renewal task submission failed token:%s err:%s", token, err.Error())
 	}
 }
 
 // GetOptions 获取Options配置
 func (m *GTokenV2) GetOptions() Options {
 	return m.Options
+}
+
+// Shutdown gracefully stops renew pool | 优雅关闭续期协程池
+func (m *GTokenV2) Shutdown() {
+	if m.RenewPoolManager != nil {
+		m.RenewPoolManager.Stop()
+	}
 }
