@@ -3,7 +3,6 @@ package dtoken
 
 import (
 	"fmt"
-	"github.com/click33/sa-token-go/core/adapter"
 	"sync"
 	"time"
 
@@ -16,8 +15,7 @@ const (
 	DefaultMaxSize       = 2000             // Maximum pool size | 最大协程数
 	DefaultScaleUpRate   = 0.8              // Scale-up threshold (expand when usage exceeds this ratio) | 扩容阈值，当使用率超过此比例时扩容
 	DefaultScaleDownRate = 0.3              // Scale-down threshold (shrink when usage below this ratio) | 缩容阈值，当使用率低于此比例时缩容
-	DefaultRenewInterval = 5 * time.Minute  // Minimum renewal interval | 最小续期间隔（每个用户 5 分钟只能续期一次）
-	DefaultCheckInterval = time.Millisecond // Interval for auto-scaling checks | 检查间隔
+	DefaultCheckInterval = time.Minute      // Interval for auto-scaling checks | 检查间隔
 	DefaultExpiry        = 10 * time.Second // Idle worker expiry duration | 空闲协程过期时间
 )
 
@@ -55,7 +53,6 @@ type RenewPoolManager struct {
 	mu      sync.Mutex       // Synchronization lock | 互斥锁
 	stopCh  chan struct{}    // Stop signal channel | 停止信号通道
 	started bool             // Indicates if pool manager is running | 是否已启动
-	storage *adapter.Storage
 }
 
 // NewRenewPoolManagerWithConfig creates manager with config | 使用配置创建续期池管理器

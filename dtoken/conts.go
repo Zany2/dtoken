@@ -1,6 +1,8 @@
 package dtoken
 
 const (
+	GTokenCfgName = "gToken" // Global configuration node name for gToken | 全局配置文件中 gToken 节点名称
+
 	CacheModeCache   = 1            // Cache mode using in-memory cache | 使用内存缓存的缓存模式
 	CacheModeRedis   = 2            // Cache mode using Redis | 使用 Redis 的缓存模式
 	CacheModeFile    = 3            // Cache mode using file | 使用文件存储的缓存模式
