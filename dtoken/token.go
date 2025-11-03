@@ -210,21 +210,28 @@ func (m *GTokenV2) Validate(ctx context.Context, token string) (data any, err er
 
 // Renew asynchronously renews a token | 异步续期 Token
 func (m *GTokenV2) Renew(ctx context.Context, userKey string, userCache g.Map) {
-	if err := m.RenewPoolManager.Submit(func() {
+	_ = m.RenewPoolManager.Submit(func() {
+		// 再次确认 Token 是否依然有效
+		currentCache, err := m.Cache.Get(ctx, userKey)
+		if err != nil || currentCache == nil {
+			// 用户已登出或被清除
+			return
+		}
+
+		// 校验 token 一致性，防止被其他 Token 替换
+		if currentCache[KeyToken] != userCache[KeyToken] {
+			return
+		}
+
 		newMap := gconv.Map(userCache, gconv.MapOption{Deep: true})
 		if newMap == nil {
 			return
 		}
 
-		newMap[KeyLastRenewTime] = gtime.Now().TimestampMilli()      // 设置续期时间
-		newMap[KeyRefreshNum] = gconv.Int(newMap[KeyRefreshNum]) + 1 // 增加续期次数
-
-		if err := m.Cache.Set(ctx, userKey, newMap); err != nil {
-			g.Log().Errorf(ctx, "Token Renew cache set failed, userKey:%s, err:%+v", userKey, err)
-		}
-	}); err != nil {
-		g.Log().Errorf(ctx, "Token Renew submit failed, userKey:%s, err:%+v", userKey, err)
-	}
+		newMap[KeyLastRenewTime] = gtime.Now().TimestampMilli()
+		newMap[KeyRefreshNum] = gconv.Int(newMap[KeyRefreshNum]) + 1
+		_ = m.Cache.Set(ctx, userKey, newMap)
+	})
 }
 
 // shouldRenew checks whether the token should be renewed | 判断是否需要续期
