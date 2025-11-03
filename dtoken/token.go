@@ -137,66 +137,6 @@ func NewDefaultToken(options Options) Token {
 	return gfToken
 }
 
-//// NewDefaultToken creates token instance with options | 使用配置创建 Token 实例
-//func NewDefaultToken(options Options) Token {
-//	// Apply defaults | 应用默认配置
-//	if options.CacheMode == 0 {
-//		options.CacheMode = CacheModeCache
-//	}
-//	if options.CachePreKey == "" {
-//		options.CachePreKey = DefaultCacheKey
-//	}
-//	if options.Timeout <= 0 {
-//		options.Timeout = DefaultTimeout
-//	}
-//	if options.MaxRefresh <= 0 {
-//		options.MaxRefresh = options.Timeout / 2
-//	}
-//	if len(options.EncryptKey) == 0 {
-//		options.EncryptKey = []byte(DefaultEncryptKey)
-//	}
-//	if options.TokenDelimiter == "" {
-//		options.TokenDelimiter = DefaultTokenDelimiter
-//	}
-//	if options.PoolMinSize <= 0 {
-//		options.PoolMinSize = DefaultMinSize
-//	}
-//	if options.PoolMaxSize <= 0 {
-//		options.PoolMaxSize = DefaultMaxSize
-//	}
-//	if options.PoolScaleUpRate <= 0 {
-//		options.PoolScaleUpRate = DefaultScaleUpRate
-//	}
-//	if options.PoolScaleDownRate <= 0 {
-//		options.PoolScaleDownRate = DefaultScaleDownRate
-//	}
-//	if options.RenewInterval <= 0 {
-//		options.RenewInterval = 0
-//	}
-//
-//	// Initialize renew pool | 初始化续期协程池
-//	renewPoolManager, err := NewRenewPoolBuilder().
-//		MinSize(options.PoolMinSize).
-//		MaxSize(options.PoolMaxSize).
-//		ScaleUpRate(options.PoolScaleUpRate).
-//		ScaleDownRate(options.PoolScaleDownRate).
-//		Build()
-//	if err != nil {
-//		panic(err)
-//	}
-//
-//	// Construct main token instance | 构建主 Token 实例
-//	gfToken := &GTokenV2{
-//		Options:          options,
-//		Codec:            NewDefaultCodec(options.TokenDelimiter, options.EncryptKey),
-//		Cache:            NewDefaultCache(options.CacheMode, options.CachePreKey, options.Timeout),
-//		RenewPoolManager: renewPoolManager,
-//	}
-//
-//	g.Log().Infof(gctx.New(), gfToken.Options.String())
-//	return gfToken
-//}
-
 // Generate creates a new token for user | 生成 Token
 func (m *GTokenV2) Generate(ctx context.Context, userKey string, data any) (token string, err error) {
 	if userKey == "" {

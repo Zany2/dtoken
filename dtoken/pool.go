@@ -106,9 +106,14 @@ func (m *RenewPoolManager) Submit(task func()) error {
 
 // Stop stops the auto-scaling process | 停止自动扩缩容
 func (m *RenewPoolManager) Stop() {
-	if m.started {
-		close(m.stopCh)
-		m.started = false
+	if !m.started {
+		return
+	}
+	close(m.stopCh)
+	m.started = false
+
+	if m.pool != nil && !m.pool.IsClosed() {
+		m.pool.Release()
 	}
 }
 
