@@ -16,9 +16,6 @@ const (
 	KeyRefreshNum = "refreshNum" // 刷新次数
 	KeyData       = "data"       // 缓存自定义数据
 	KeyToken      = "token"      // token
-
-	DefaultGoroutinePoolSize  = 20
-	DefaultGoroutineTaskQueue = 200
 )
 
 const (
