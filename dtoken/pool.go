@@ -41,7 +41,7 @@ func DefaultRenewPoolConfig() *RenewPoolConfig {
 		ScaleDownRate: DefaultScaleDownRate,
 		CheckInterval: DefaultCheckInterval,
 		Expiry:        DefaultExpiry,
-		PreAlloc:      false,
+		PreAlloc:      true,
 		NonBlocking:   true,
 	}
 }
