@@ -7,7 +7,7 @@ import (
 )
 
 // Version version number | 版本号
-const Version = "v1.0.0"
+const Version = "v1.0.1"
 
 const Banner = `
           ____  ______      __            
@@ -16,7 +16,7 @@ const Banner = `
        / /_/ / / / / /_/ / ,< /  __/ / / /
       /_____/ /_/  \____/_/|_|\___/_/ /_/ 
 
-:: DToken-Go ::                               %s
+:: GToken-Go ::                               %s
 `
 
 const (
