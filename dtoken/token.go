@@ -202,7 +202,7 @@ func (m *GTokenV2) Validate(ctx context.Context, token string) (data any, err er
 
 	// Check if renewal is needed | 判断是否需要续期
 	if m.shouldRenew(userCache) {
-		m.Renew(gctx.NeverDone(ctx), userKey, userCache)
+		m.Renew(gctx.New(), userKey, userCache)
 	}
 
 	return userCache[KeyData], nil
