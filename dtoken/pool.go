@@ -77,7 +77,26 @@ func NewRenewPoolManagerWithConfig(cfg *RenewPoolConfig) (*RenewPoolManager, err
 		return nil, err
 	}
 
+	// Start auto-scaling routine | 启动自动扩缩容协程
 	go mgr.autoScale()
+
+	// Start periodic pool status printer if interval is set | 若设置了打印间隔，则启动定时打印池状态的协程
+	if cfg.PrintStatusInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(cfg.PrintStatusInterval) // Create ticker for status printing | 创建定时器用于打印状态
+			defer ticker.Stop()                               // Stop ticker on exit | 退出时停止定时器
+
+			for {
+				select {
+				case <-ticker.C:
+					mgr.PrintStatus() // Print current pool status | 打印当前协程池状态
+				case <-mgr.stopCh:
+					return // Exit when stop signal received | 收到停止信号后退出
+				}
+			}
+		}()
+	}
+
 	return mgr, nil
 }
 
@@ -99,7 +118,7 @@ func (m *RenewPoolManager) initPool() error {
 // Submit submits a renewal task | 提交续期任务
 func (m *RenewPoolManager) Submit(task func()) error {
 	if !m.started {
-		return fmt.Errorf("renew pool not started")
+		return fmt.Errorf("RenewPool not started")
 	}
 	return m.pool.Submit(task)
 }
@@ -223,6 +242,12 @@ func (b *RenewPoolBuilder) Expiry(expiry time.Duration) *RenewPoolBuilder {
 	return b
 }
 
+// PrintStatusInterval sets the interval for printing pool status | 设置打印状态的间隔
+func (b *RenewPoolBuilder) PrintStatusInterval(interval time.Duration) *RenewPoolBuilder {
+	b.cfg.PrintStatusInterval = interval
+	return b
+}
+
 // PreAlloc sets pre-allocation flag | 设置是否预分配内存
 func (b *RenewPoolBuilder) PreAlloc(prealloc bool) *RenewPoolBuilder {
 	b.cfg.PreAlloc = prealloc
@@ -233,6 +258,11 @@ func (b *RenewPoolBuilder) PreAlloc(prealloc bool) *RenewPoolBuilder {
 func (b *RenewPoolBuilder) NonBlocking(nonblocking bool) *RenewPoolBuilder {
 	b.cfg.NonBlocking = nonblocking
 	return b
+}
+
+// Config returns the current RenewPoolConfig | 返回当前的续期池配置
+func (b *RenewPoolBuilder) Config() *RenewPoolConfig {
+	return b.cfg
 }
 
 // Build constructs a RenewPoolManager instance | 构建 RenewPoolManager 实例
