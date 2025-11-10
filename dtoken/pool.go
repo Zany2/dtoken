@@ -113,7 +113,7 @@ func (m *RenewPoolManager) Stop() {
 	m.started = false
 
 	if m.pool != nil && !m.pool.IsClosed() {
-		m.pool.Release()
+		_ = m.pool.ReleaseTimeout(10 * time.Second)
 	}
 }
 
